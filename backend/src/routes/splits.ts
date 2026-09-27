@@ -84,6 +84,7 @@ import {
 } from "../services/splits.service.js";
 import { logger } from "../services/logger.js";
 import { idempotencyMiddleware } from "../middleware/idempotency.js";
+import { recordProjectEdit } from "../services/project-history.js";
 
 // Re-export all schemas, contract helpers, and services for backwards compatibility
 export {
@@ -423,6 +424,10 @@ splitsRouter.patch("/:projectId/metadata", async (req, res, next) => {
         title: parsedBody.data.title,
         projectType: parsedBody.data.projectType
       });
+      await recordProjectEdit(parsedParams.data, parsedBody.data.owner, "update_metadata", {
+        title: parsedBody.data.title,
+        projectType: parsedBody.data.projectType
+      });
       return res.status(200).json(result);
     } catch (error) {
       if (error instanceof RequestValidationError) {
@@ -453,6 +458,9 @@ splitsRouter.put("/:projectId/collaborators", async (req, res, next) => {
       const result = await buildUpdateCollaboratorsUnsignedXdr({
         projectId: parsedParams.data,
         owner: parsedBody.data.owner,
+        collaborators: parsedBody.data.collaborators
+      });
+      await recordProjectEdit(parsedParams.data, parsedBody.data.owner, "update_collaborators", {
         collaborators: parsedBody.data.collaborators
       });
       return res.status(200).json(result);
