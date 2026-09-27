@@ -51,4 +51,37 @@ describe('TransactionReceipt', () => {
     expect(screen.getByText('Custom error message')).toBeInTheDocument();
     expect(screen.getByText('Retry Transaction')).toBeInTheDocument();
   });
+  it('links to the explorer URL it is given, verbatim', () => {
+    const url = 'https://stellar.expert/explorer/public/tx/' + mockTxHash;
+    render(
+      <TransactionReceipt
+        status="pending"
+        isStale={false}
+        txHash={mockTxHash}
+        explorerUrl={url}
+      />
+    );
+
+    const link = screen.getByLabelText('View on Stellar Explorer');
+    expect(link).toHaveAttribute('href', url);
+  });
+
+  it('renders no explorer link when no URL is supplied (#1311)', () => {
+    // It used to default to a testnet base, so a mainnet transaction linked to
+    // an explorer that had never seen it. No link beats a wrong one.
+    render(<TransactionReceipt status="pending" isStale={false} txHash={mockTxHash} />);
+    expect(screen.queryByLabelText('View on Stellar Explorer')).toBeNull();
+  });
+
+  it('renders no explorer link when the URL is null', () => {
+    render(
+      <TransactionReceipt
+        status="pending"
+        isStale={false}
+        txHash={mockTxHash}
+        explorerUrl={null}
+      />
+    );
+    expect(screen.queryByLabelText('View on Stellar Explorer')).toBeNull();
+  });
 });
