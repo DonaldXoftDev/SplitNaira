@@ -20,12 +20,17 @@ export interface InvitationRecord {
   acceptedAt?: string;
 }
 
+/** How the cancelling actor was authorized. */
+export type InvitationCancelAuthority = "inviter" | "project_owner";
+
 export interface InvitationCancelEvent {
   type: "invitation.cancelled";
   invitationId: string;
   email: string;
   projectId?: string;
   cancelledBy: string;
+  /** Which authorization path allowed the cancellation. */
+  authority: InvitationCancelAuthority;
   at: string;
 }
 
@@ -74,12 +79,27 @@ export function getInvitationByTokenJti(jti: string): InvitationRecord | undefin
 }
 
 /**
- * Cancel a pending invitation. Only the original inviter (or project owner
- * address passed as `actor`) may cancel.
+ * Cancel a pending invitation.
+ *
+ * Two actors may cancel: the original inviter, or the project owner (when the
+ * owner's address is supplied from authoritative project state).
+ *
+ * This fails closed. An invitation with no recorded inviter has no inviter to
+ * match, so it can *only* be cancelled by an explicitly identified project
+ * owner — an unrecognised actor is refused. (Previously any actor at all could
+ * cancel such an invitation, which let anyone disable an invitation they had
+ * never sent, since a cancelled invitation can no longer be accepted.)
  */
 export function cancelInvitation(input: {
   invitationId: string;
   actorWalletAddress: string;
+  /**
+   * The project owner's address, when it is known from the project record.
+   *
+   * This is an *authorization claim*: callers must read it from stored project
+   * state, never from the request being authorized.
+   */
+  projectOwnerAddress?: string;
 }): InvitationRecord {
   const record = invitations.get(input.invitationId);
   if (!record) {
@@ -95,20 +115,36 @@ export function cancelInvitation(input: {
     });
   }
 
-  const actor = input.actorWalletAddress.trim();
+  const actor = typeof input.actorWalletAddress === "string" ? input.actorWalletAddress.trim() : "";
+  if (!actor) {
+    throw Object.assign(new Error("actor_required"), {
+      code: "actor_required",
+      status: 400,
+    });
+  }
+
   const inviter = (record.inviterWalletAddress ?? "").trim();
-  if (inviter && actor !== inviter) {
-    throw Object.assign(new Error("forbidden_not_inviter"), {
-      code: "forbidden_not_inviter",
-      status: 403,
-    });
+  const projectOwner = (input.projectOwnerAddress ?? "").trim();
+
+  const isInviter = inviter !== "" && actor === inviter;
+  const isProjectOwner = projectOwner !== "" && actor === projectOwner;
+
+  if (!isInviter && !isProjectOwner) {
+    // Distinguish "not the inviter" from "there is no inviter to be", so the
+    // caller can tell a rejected actor from an invitation that needs an owner.
+    const inviterUnknown = inviter === "";
+    throw Object.assign(
+      new Error(inviterUnknown ? "inviter_unknown" : "forbidden_not_inviter"),
+      {
+        code: inviterUnknown ? "inviter_unknown" : "forbidden_not_inviter",
+        status: 403,
+      },
+    );
   }
-  if (!inviter && !actor) {
-    throw Object.assign(new Error("forbidden_not_inviter"), {
-      code: "forbidden_not_inviter",
-      status: 403,
-    });
-  }
+
+  const authority: InvitationCancelAuthority = isProjectOwner
+    ? "project_owner"
+    : "inviter";
 
   record.status = "cancelled";
   record.cancelledAt = new Date().toISOString();
@@ -120,6 +156,7 @@ export function cancelInvitation(input: {
     email: record.email,
     projectId: record.projectId,
     cancelledBy: actor,
+    authority,
     at: record.cancelledAt,
   };
   events.push(event);
