@@ -27,6 +27,7 @@ export const SPLIT_STATES = [
   "distributing",
   "settled",
   "cancelled",
+  "expired",
 ] as const;
 
 export type SplitState = (typeof SPLIT_STATES)[number];
@@ -45,6 +46,10 @@ export interface ProjectSnapshot {
   totalDistributed: string | number | bigint;
   distributionRound: number;
   collaborators: Collaborator[];
+  /** When true, force lifecycle state to draft (off-chain draft flag, #1302). */
+  isDraft?: boolean;
+  /** ISO timestamp deadline; when past, force expired (#1303). */
+  expiresAt?: string | null;
 }
 
 /** The subset of a transaction record the derivation depends on. */
@@ -96,8 +101,20 @@ function sameAddress(a: string, b: string): boolean {
 export function deriveSplitState(
   project: ProjectSnapshot,
   cancellation?: CancellationSnapshot | null,
+  now: Date = new Date(),
 ): SplitState {
   if (cancellation) return "cancelled";
+
+  // Explicit off-chain draft marker wins over balance heuristics (#1302).
+  if (project.isDraft) return "draft";
+
+  // Optional completion deadline (#1303). Expired blocks further funding in the API.
+  if (project.expiresAt) {
+    const deadline = new Date(project.expiresAt).getTime();
+    if (!Number.isNaN(deadline) && deadline <= now.getTime()) {
+      return "expired";
+    }
+  }
 
   const balance = toBigInt(project.balance);
   const distributed = toBigInt(project.totalDistributed);
@@ -113,7 +130,7 @@ export function deriveSplitState(
 
 /** True when the split has reached a state no further funding should enter. */
 export function isTerminal(state: SplitState): boolean {
-  return state === "settled" || state === "cancelled";
+  return state === "settled" || state === "cancelled" || state === "expired";
 }
 
 /**
@@ -124,6 +141,11 @@ export function isTerminal(state: SplitState): boolean {
  */
 export function isCancellable(state: SplitState): boolean {
   return state === "draft" || state === "active";
+}
+
+/** Whether the API should reject deposit / distribute / lock (#1302, #1303). */
+export function isFinancialActionAllowed(state: SplitState): boolean {
+  return state === "active" || state === "distributing";
 }
 
 export interface ParticipantPaymentStatus {
