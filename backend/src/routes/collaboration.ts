@@ -1,7 +1,7 @@
 /**
- * Collaboration routes – invitations cancel is on auth-email;
- * this module exposes project deletion safeguards (#1296) and
- * permissions introspection (#1300).
+ * Collaboration routes – invitations cancel is on auth-email; this module
+ * exposes project deletion safeguards (#1296) and permissions introspection
+ * plus server-side permission enforcement (#1300).
  */
 
 import { Router, type NextFunction, type Request, type Response } from "express";
@@ -11,14 +11,35 @@ import {
   requestProjectDeletion,
   type ProjectFinancialSnapshot,
 } from "../services/collaboration/project-deletion.js";
+import { getPermissionsMatrix } from "../services/collaboration/permissions.js";
 import {
-  getPermissionsMatrix,
-  resolveCollaboratorRole,
-  assertPermission,
-  type CollaboratorRole,
-} from "../services/collaboration/permissions.js";
+  createProjectPermissionMiddleware,
+  type ProjectRoleContextResolver,
+} from "../middleware/project-permission.js";
+import { requireStellarAddress } from "../middleware/project-access.js";
 
 export const collaborationRouter = Router();
+
+/**
+ * Authoritative source for a project's collaboration record, wired at startup.
+ *
+ * Until it is registered the delete route fails closed: without a record there
+ * is no role to resolve, and assuming one is how the client-supplied `role`
+ * field used to work (#1300).
+ */
+let resolveProjectRoleContext: ProjectRoleContextResolver | null = null;
+
+export function setProjectRoleContextResolver(
+  resolver: ProjectRoleContextResolver,
+): void {
+  resolveProjectRoleContext = resolver;
+}
+
+const resolveRoleContext: ProjectRoleContextResolver = (projectId) =>
+  resolveProjectRoleContext
+    ? resolveProjectRoleContext(projectId)
+    : Promise.resolve(null);
+
 
 collaborationRouter.get("/permissions/matrix", (_req, res) => {
   res.status(200).json({ roles: getPermissionsMatrix() });
@@ -36,12 +57,15 @@ const deleteBodySchema = z.object({
     transactionCount: z.number().int().nonnegative(),
     totalVolumeStroops: z.string().optional(),
   }),
-  /** Optional role check – owner/admin required for delete */
-  role: z.enum(["owner", "admin", "editor", "viewer"]).optional(),
 });
+
 
 collaborationRouter.post(
   "/projects/:projectId/delete",
+  // The acting role is resolved from the verified requester address against the
+  // project's stored collaboration record — never from the request body.
+  requireStellarAddress,
+  createProjectPermissionMiddleware("project:delete", resolveRoleContext),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = deleteBodySchema.parse(req.body);
@@ -49,14 +73,6 @@ collaborationRouter.post(
 
       if (body.financial.projectId !== projectId) {
         return res.status(400).json({ error: "project_id_mismatch" });
-      }
-
-      // Server-side permission enforcement (#1300)
-      const role: CollaboratorRole = body.role ?? "owner";
-      try {
-        assertPermission(role, "project:delete");
-      } catch {
-        return res.status(403).json({ error: "permission_denied" });
       }
 
       const snapshot: ProjectFinancialSnapshot = body.financial;
@@ -77,6 +93,7 @@ collaborationRouter.post(
 
       return res.status(200).json({
         success: true,
+        role: res.locals.collaboratorRole,
         decision,
       });
     } catch (error) {
