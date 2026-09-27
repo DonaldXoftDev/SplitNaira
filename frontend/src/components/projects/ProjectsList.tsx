@@ -157,6 +157,7 @@ export function ProjectsList({
                 <ProjectCard
                   key={p.projectId}
                   project={p}
+                  distributionPaused={adminStatus?.isPaused === true}
                   onSelect={() => {
                     setSelectedProjectId(p.projectId);
                     setFetchedProject(p);
@@ -385,7 +386,8 @@ export function ProjectsList({
                   disabled={
                     Number(fetchedProject.balance) <= 0 ||
                     !wallet.connected ||
-                    sorobanSplitFlowBusy
+                    sorobanSplitFlowBusy ||
+                    adminStatus?.isPaused === true
                   }
                   className="premium-button w-full rounded-2xl bg-greenBright py-6 text-xs font-black uppercase tracking-[0.3em] text-[#0a0a09] shadow-xl shadow-greenBright/10 disabled:opacity-10 disabled:bg-white"
                 >
