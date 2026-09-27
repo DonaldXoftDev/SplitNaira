@@ -31,6 +31,13 @@ export class SplitsController {
           undefined,
           parsed.error.flatten()
         );
+        //   throw new AppError(
+        //   ErrorType.VALIDATION,
+        //   ErrorCode.VALIDATION_ERROR,
+        //   "Invalid request payload.",
+        //   undefined,
+        //   parsed.error.flatten()
+        // );
       }
 
       let { start, limit, search, type, cursor } = parsed.data;
