@@ -10,7 +10,8 @@ interface TransactionReceiptProps {
   errorMessage?: string | null;
   onRetry?: () => void;
   onRefresh?: () => void;
-  explorerUrl?: string;
+  /** Full explorer URL for the transaction. Null/absent renders no link. */
+  explorerUrl?: string | null;
 }
 
 export const TransactionReceipt: React.FC<TransactionReceiptProps> = ({
@@ -20,7 +21,9 @@ export const TransactionReceipt: React.FC<TransactionReceiptProps> = ({
   errorMessage,
   onRetry,
   onRefresh,
-  explorerUrl = 'https://stellar.expert/explorer/testnet/tx',
+  // No default: a hardcoded testnet base linked mainnet transactions to an
+  // explorer that has never seen them (#1311). Absent means render no link.
+  explorerUrl,
 }) => {
   const [copied, setCopied] = useState(false);
 
@@ -87,15 +90,17 @@ export const TransactionReceipt: React.FC<TransactionReceiptProps> = ({
             >
               {copied ? <CheckCircle2 className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
             </button>
-            <a
-              href={`${explorerUrl}/${txHash}`}
-              target="_blank"
-              rel="noreferrer"
-              className="p-1.5 hover:bg-[#26282E] rounded text-gray-400 hover:text-white transition-colors"
-              aria-label="View on Stellar Explorer"
-            >
-              <ExternalLink className="w-4 h-4" />
-            </a>
+            {explorerUrl ? (
+              <a
+                href={explorerUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="p-1.5 hover:bg-[#26282E] rounded text-gray-400 hover:text-white transition-colors"
+                aria-label="View on Stellar Explorer"
+              >
+                <ExternalLink className="w-4 h-4" />
+              </a>
+            ) : null}
           </div>
         </div>
       )}

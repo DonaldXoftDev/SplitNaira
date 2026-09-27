@@ -176,7 +176,6 @@ export function TransactionReceiptView({
   useEffect(() => {
     if (realtimeStatus === "completed" && receipt.lifecycle === "confirming") {
       // Transaction completed - this could trigger a parent callback if needed
-      console.log(`Transaction ${receipt.hash} completed via SSE`);
     }
   }, [realtimeStatus, receipt.lifecycle, receipt.hash]);
 
@@ -310,7 +309,7 @@ export function TransactionReceiptView({
               </p>
               <CopyHashButton hash={receipt.hash} className="shrink-0" />
             </div>
-            {(isSuccess || isConfirming || isTimeout) && (
+            {resolvedExplorerUrl && (isSuccess || isConfirming || isTimeout) && (
               <a
                 href={resolvedExplorerUrl}
                 target="_blank"
@@ -322,7 +321,7 @@ export function TransactionReceiptView({
                 {EXTERNAL_LINK_ICON}
               </a>
             )}
-            {isFailed && (
+            {resolvedExplorerUrl && isFailed && (
               <a
                 href={resolvedExplorerUrl}
                 target="_blank"

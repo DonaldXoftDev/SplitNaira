@@ -15,6 +15,7 @@ import { authEmailRouter } from "./routes/auth-email.js";
 import { transactionsRouter } from "./routes/transactions.js";
 import { eventsRouter, closeAllSseConnections } from "./routes/events.js";
 import { ledgerRouter } from "./routes/ledger.js";
+import { notificationsRouter } from "./routes/notifications.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
 import { metricsMiddleware, payloadSizeMetricsMiddleware } from "./middleware/metrics.js";
@@ -133,6 +134,7 @@ app.use("/users", (req, res, next) => {
   return writeLimiter(req, res, next);
 });
 app.use("/transactions", readLimiter);
+app.use("/notifications", readLimiter);
 app.use("/api/ledger", readLimiter);
 app.use("/events", sseConnectionLimiter);
 
@@ -152,6 +154,7 @@ app.use("/users", usersRouter);
 app.use("/transactions", transactionsRouter);
 app.use("/events", eventsRouter);
 app.use("/api/ledger", ledgerRouter);
+app.use("/notifications", notificationsRouter);
 
 app.get("/api/openapi.json", async (_req, res, next) => {
   try {
