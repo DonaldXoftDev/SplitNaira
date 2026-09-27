@@ -6,6 +6,8 @@ import { TransactionRecord } from "../entities/Transaction.js";
 import { ServiceState } from "../entities/ServiceState.js";
 import { AuditLog } from "../entities/AuditLog.js";
 import { LedgerBlock } from "../entities/LedgerBlock.js";
+import { SplitCancellation } from "../entities/SplitCancellation.js";
+import { NotificationPreference } from "../entities/NotificationPreference.js";
 import { logger } from "./logger.js";
 
 let AppDataSource: DataSource | null = null;
@@ -35,7 +37,15 @@ export function createDataSource(): DataSource {
     url: databaseUrl,
     synchronize: false,
     logging: process.env.NODE_ENV === "development",
-    entities: [User, TransactionRecord, ServiceState, AuditLog, LedgerBlock],
+    entities: [
+      User,
+      TransactionRecord,
+      ServiceState,
+      AuditLog,
+      LedgerBlock,
+      SplitCancellation,
+      NotificationPreference,
+    ],
     migrations: ["src/migrations/*.ts"],
     migrationsTableName: "migrations",
     extra: {
