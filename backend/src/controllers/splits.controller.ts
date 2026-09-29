@@ -1,4 +1,13 @@
-import type { NextFunction, Request, Response } from "express";
+import type { Request, Response, NextFunction } from "express";
+import {
+  projectIdParamSchema,
+  lockProjectSchema,
+  depositSchema,
+  listProjectsSchema,
+} from "../schemas/splits.js";
+import { AppError, ErrorCode, ErrorType } from "../lib/errors.js";
+import { serializeBigInts, listProjects, fetchProjectById, buildLockProjectUnsignedXdr, buildDepositUnsignedXdr, encodeCursor, decodeCursor, simulateReadOnlyContractCall } from "../services/splits.service.js";
+import { recordProjectEdit } from "../services/project-history.js";
 import { scValToNative } from "@stellar/stellar-sdk";
 
 import {
@@ -41,6 +50,13 @@ export class SplitsController {
           undefined,
           parsed.error.flatten(),
         );
+        //   throw new AppError(
+        //   ErrorType.VALIDATION,
+        //   ErrorCode.VALIDATION_ERROR,
+        //   "Invalid request payload.",
+        //   undefined,
+        //   parsed.error.flatten()
+        // );
       }
 
       let { start, limit, search, type, cursor } = parsed.data;
@@ -69,10 +85,7 @@ export class SplitsController {
 
       const nextStart = start + projects.length;
 
-      const nextCursor =
-        projects.length === limit && nextStart < totalCount
-          ? encodeCursor(nextStart)
-          : null;
+      const nextCursor = start + projects.length < totalCount ? encodeCursor(start + limit) : null;
 
       return res.status(200).json(
         serializeBigInts({
@@ -98,15 +111,8 @@ export class SplitsController {
       const { projectId } = projectIdParamSchema.parse(req.params);
 
       const project = await fetchProjectById(projectId);
-
-      if (!project) {
-        throw new AppError(
-          ErrorType.VALIDATION,
-          ErrorCode.NOT_FOUND,
-          `Project ${projectId} not found.`,
-        );
-      }
-
+      if (!project)
+        throw new AppError(ErrorType.RPC, ErrorCode.NOT_FOUND, `Project ${projectId} not found.`);
       return res.status(200).json(serializeBigInts(project));
     } catch (error) {
       return next(error);
@@ -122,15 +128,11 @@ export class SplitsController {
     next: NextFunction,
   ): Promise<Response | void> {
     try {
-      const { projectId } = projectIdParamSchema.parse(req.params);
-      const { owner } = lockProjectSchema.parse(req.body);
-
-      const result = await buildLockProjectUnsignedXdr({
-        projectId,
-        owner,
-      });
-
-      return res.status(200).json(serializeBigInts(result));
+      const projectId = projectIdParamSchema.parse(req.params.projectId);
+      const body = lockProjectSchema.parse(req.body);
+      const result = await buildLockProjectUnsignedXdr({ projectId, owner: body.owner });
+      await recordProjectEdit(projectId, body.owner, "lock", { locked: true });
+      return res.status(200).json(result);
     } catch (error) {
       return next(error);
     }
@@ -145,17 +147,17 @@ export class SplitsController {
     next: NextFunction,
   ): Promise<Response | void> {
     try {
-      const { projectId } = projectIdParamSchema.parse(req.params);
-      const { from, amount, token } = depositSchema.parse(req.body);
-
+      const projectId = projectIdParamSchema.parse(req.params.projectId);
+      const body = depositSchema.parse(req.body);
       const result = await buildDepositUnsignedXdr({
         projectId,
-        from,
-        amount,
-        token,
+        from: body.from,
+        amount: body.amount,
+        token: body.token,
       });
-
-      return res.status(200).json(serializeBigInts(result));
+      invalidateCache(`project:${projectId}`);
+      invalidateCacheByPrefix("list_projects:");
+      return res.status(200).json(result);
     } catch (error) {
       return next(error);
     }

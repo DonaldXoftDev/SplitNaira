@@ -1,11 +1,15 @@
 /**
- * Issue #1299 – Collaborator invitation lifecycle registry.
+ * Collaborator invitation lifecycle registry (#1299, #1298).
  *
- * Tracks pending invitations so owners can cancel them. Cancelled invitations
- * cannot be accepted. Cancellation events are recorded for audit.
+ * Tracks pending invitations so owners can cancel them and so expired
+ * invitations cannot be accepted. Cancellation and expiry events are recorded
+ * for audit. In-memory store is suitable for unit tests; swap for DB in prod.
  */
 
-export type InvitationStatus = "pending" | "accepted" | "cancelled";
+export type InvitationStatus = "pending" | "accepted" | "cancelled" | "expired";
+
+/** Default invitation time-to-live: 7 days. */
+export const DEFAULT_INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface InvitationRecord {
   id: string;
@@ -15,9 +19,12 @@ export interface InvitationRecord {
   inviterWalletAddress?: string;
   status: InvitationStatus;
   createdAt: string;
+  /** ISO timestamp after which the invitation may not be accepted. */
+  expiresAt: string;
   cancelledAt?: string;
   cancelledBy?: string;
   acceptedAt?: string;
+  expiredAt?: string;
 }
 
 /** How the cancelling actor was authorized. */
@@ -34,10 +41,19 @@ export interface InvitationCancelEvent {
   at: string;
 }
 
+export interface InvitationExpiredEvent {
+  type: "invitation.expired";
+  invitationId: string;
+  email: string;
+  projectId?: string;
+  at: string;
+}
+
 /** In-memory store suitable for unit tests; swap for DB in production. */
 const invitations = new Map<string, InvitationRecord>();
 const tokenIndex = new Map<string, string>(); // tokenJti -> invitationId
-const events: InvitationCancelEvent[] = [];
+const cancelEvents: InvitationCancelEvent[] = [];
+const expiredEvents: InvitationExpiredEvent[] = [];
 
 function newId(): string {
   return `inv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
@@ -46,7 +62,36 @@ function newId(): string {
 export function resetInvitationRegistryForTests(): void {
   invitations.clear();
   tokenIndex.clear();
-  events.length = 0;
+  cancelEvents.length = 0;
+  expiredEvents.length = 0;
+}
+
+function markExpiredIfNeeded(
+  record: InvitationRecord,
+  now: Date = new Date(),
+): InvitationRecord {
+  if (record.status !== "pending") return record;
+  if (new Date(record.expiresAt).getTime() > now.getTime()) return record;
+
+  record.status = "expired";
+  record.expiredAt = now.toISOString();
+  expiredEvents.push({
+    type: "invitation.expired",
+    invitationId: record.id,
+    email: record.email,
+    projectId: record.projectId,
+    at: record.expiredAt,
+  });
+  return record;
+}
+
+export function isInvitationExpired(
+  record: InvitationRecord,
+  now: Date = new Date(),
+): boolean {
+  if (record.status === "expired") return true;
+  if (record.status !== "pending") return false;
+  return new Date(record.expiresAt).getTime() <= now.getTime();
 }
 
 export function registerInvitation(input: {
@@ -54,7 +99,26 @@ export function registerInvitation(input: {
   tokenJti: string;
   projectId?: string;
   inviterWalletAddress?: string;
+  /** Override TTL; defaults to DEFAULT_INVITATION_TTL_MS from createdAt. */
+  ttlMs?: number;
+  /** Absolute expiry; takes precedence over ttlMs when provided. */
+  expiresAt?: Date | string;
+  now?: Date;
 }): InvitationRecord {
+  const now = input.now ?? new Date();
+  const ttl = input.ttlMs ?? DEFAULT_INVITATION_TTL_MS;
+  const expiresAt =
+    input.expiresAt != null
+      ? new Date(input.expiresAt)
+      : new Date(now.getTime() + ttl);
+
+  if (expiresAt.getTime() <= now.getTime()) {
+    throw Object.assign(new Error("invitation_expires_in_past"), {
+      code: "invitation_expires_in_past",
+      status: 400,
+    });
+  }
+
   const record: InvitationRecord = {
     id: newId(),
     email: input.email.toLowerCase(),
@@ -62,20 +126,57 @@ export function registerInvitation(input: {
     projectId: input.projectId,
     inviterWalletAddress: input.inviterWalletAddress,
     status: "pending",
-    createdAt: new Date().toISOString(),
+    createdAt: now.toISOString(),
+    expiresAt: expiresAt.toISOString(),
   };
   invitations.set(record.id, record);
   tokenIndex.set(record.tokenJti, record.id);
   return record;
 }
 
+/**
+ * Safe re-invitation (#1298): if a prior invite for the same email+project is
+ * pending, cancel it; if expired/cancelled, leave it and issue a new token.
+ */
+export function reinvite(input: {
+  email: string;
+  tokenJti: string;
+  projectId?: string;
+  inviterWalletAddress?: string;
+  ttlMs?: number;
+  expiresAt?: Date | string;
+  now?: Date;
+}): InvitationRecord {
+  const now = input.now ?? new Date();
+  const email = input.email.toLowerCase();
+
+  for (const existing of invitations.values()) {
+    if (existing.email !== email) continue;
+    if (input.projectId && existing.projectId !== input.projectId) continue;
+    markExpiredIfNeeded(existing, now);
+    if (existing.status === "pending" && input.inviterWalletAddress) {
+      cancelInvitation({
+        invitationId: existing.id,
+        actorWalletAddress: input.inviterWalletAddress,
+      });
+    }
+  }
+
+  return registerInvitation({ ...input, now });
+}
+
 export function getInvitationById(id: string): InvitationRecord | undefined {
-  return invitations.get(id);
+  const record = invitations.get(id);
+  if (!record) return undefined;
+  return markExpiredIfNeeded(record);
 }
 
 export function getInvitationByTokenJti(jti: string): InvitationRecord | undefined {
   const id = tokenIndex.get(jti);
-  return id ? invitations.get(id) : undefined;
+  if (!id) return undefined;
+  const record = invitations.get(id);
+  if (!record) return undefined;
+  return markExpiredIfNeeded(record);
 }
 
 /**
@@ -103,8 +204,12 @@ export function cancelInvitation(input: {
 }): InvitationRecord {
   const record = invitations.get(input.invitationId);
   if (!record) {
-    throw Object.assign(new Error("invitation_not_found"), { code: "invitation_not_found", status: 404 });
+    throw Object.assign(new Error("invitation_not_found"), {
+      code: "invitation_not_found",
+      status: 404,
+    });
   }
+  markExpiredIfNeeded(record);
   if (record.status === "cancelled") {
     return record; // idempotent
   }
@@ -112,6 +217,12 @@ export function cancelInvitation(input: {
     throw Object.assign(new Error("invitation_already_accepted"), {
       code: "invitation_already_accepted",
       status: 409,
+    });
+  }
+  if (record.status === "expired") {
+    throw Object.assign(new Error("invitation_expired"), {
+      code: "invitation_expired",
+      status: 410,
     });
   }
 
@@ -150,7 +261,7 @@ export function cancelInvitation(input: {
   record.cancelledAt = new Date().toISOString();
   record.cancelledBy = actor;
 
-  const event: InvitationCancelEvent = {
+  cancelEvents.push({
     type: "invitation.cancelled",
     invitationId: record.id,
     email: record.email,
@@ -158,28 +269,36 @@ export function cancelInvitation(input: {
     cancelledBy: actor,
     authority,
     at: record.cancelledAt,
-  };
-  events.push(event);
+  });
 
   return record;
 }
 
 /**
  * Attempt to accept an invitation identified by token jti.
- * Rejects cancelled invitations.
+ * Rejects cancelled and expired invitations (#1298).
  */
-export function acceptInvitationByTokenJti(jti: string): InvitationRecord {
+export function acceptInvitationByTokenJti(
+  jti: string,
+  now: Date = new Date(),
+): InvitationRecord {
   const record = getInvitationByTokenJti(jti);
   if (!record) {
-    // Token may pre-date registry; treat as accept-ok without record.
     throw Object.assign(new Error("invitation_not_tracked"), {
       code: "invitation_not_tracked",
       status: 404,
     });
   }
+  markExpiredIfNeeded(record, now);
   if (record.status === "cancelled") {
     throw Object.assign(new Error("invitation_cancelled"), {
       code: "invitation_cancelled",
+      status: 410,
+    });
+  }
+  if (record.status === "expired") {
+    throw Object.assign(new Error("invitation_expired"), {
+      code: "invitation_expired",
       status: 410,
     });
   }
@@ -187,19 +306,26 @@ export function acceptInvitationByTokenJti(jti: string): InvitationRecord {
     return record;
   }
   record.status = "accepted";
-  record.acceptedAt = new Date().toISOString();
+  record.acceptedAt = now.toISOString();
   return record;
 }
 
 export function listCancellationEvents(): readonly InvitationCancelEvent[] {
-  return events;
+  return cancelEvents;
+}
+
+export function listExpiredEvents(): readonly InvitationExpiredEvent[] {
+  return expiredEvents;
 }
 
 export function listPendingInvitations(filter?: {
   projectId?: string;
   inviterWalletAddress?: string;
+  now?: Date;
 }): InvitationRecord[] {
+  const now = filter?.now ?? new Date();
   return Array.from(invitations.values()).filter((r) => {
+    markExpiredIfNeeded(r, now);
     if (r.status !== "pending") return false;
     if (filter?.projectId && r.projectId !== filter.projectId) return false;
     if (
