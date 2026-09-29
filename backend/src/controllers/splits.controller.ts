@@ -6,17 +6,8 @@ import {
   listProjectsSchema,
 } from "../schemas/splits.js";
 import { AppError, ErrorCode, ErrorType } from "../lib/errors.js";
-import {
-  serializeBigInts,
-  listProjects,
-  fetchProjectById,
-  buildLockProjectUnsignedXdr,
-  buildDepositUnsignedXdr,
-  encodeCursor,
-  decodeCursor,
-  simulateReadOnlyContractCall,
-} from "../services/splits.service.js";
-import { invalidateCache, invalidateCacheByPrefix } from "../services/stellar.js";
+import { serializeBigInts, listProjects, fetchProjectById, buildLockProjectUnsignedXdr, buildDepositUnsignedXdr, encodeCursor, decodeCursor, simulateReadOnlyContractCall } from "../services/splits.service.js";
+import { recordProjectEdit } from "../services/project-history.js";
 import { scValToNative } from "@stellar/stellar-sdk";
 
 export class SplitsController {
@@ -82,8 +73,7 @@ export class SplitsController {
       const projectId = projectIdParamSchema.parse(req.params.projectId);
       const body = lockProjectSchema.parse(req.body);
       const result = await buildLockProjectUnsignedXdr({ projectId, owner: body.owner });
-      invalidateCache(`project:${projectId}`);
-      invalidateCacheByPrefix("list_projects:");
+      await recordProjectEdit(projectId, body.owner, "lock", { locked: true });
       return res.status(200).json(result);
     } catch (error) {
       return next(error);
